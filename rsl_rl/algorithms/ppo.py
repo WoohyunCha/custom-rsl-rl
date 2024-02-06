@@ -115,7 +115,7 @@ class PPO:
     
     def compute_returns(self, last_critic_obs):
         last_values= self.actor_critic.evaluate(last_critic_obs).detach()
-        self.storage.compute_returns(last_values, self.gamma, self.lam)
+        self.storage.compute_returns(last_values, self.gamma, self.lam) # detached target values are stored in storage
 
     def update(self):
         mean_value_loss = 0

@@ -19,9 +19,13 @@ class PPO_sym(PPO):
         self.no_mirror = no_mirror
         self.mirror_weight = mirror_weight
         self.mirror_init = True
+        self.history_len = 1
         print("Sym version of PPO loaded")
         print("Mirror weight: ", mirror_weight)
-                
+
+    def init_storage(self, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape):
+        self.storage = RolloutStorage(num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape, self.device)
+
     def update(self):
         mean_value_loss = 0
         mean_surrogate_loss = 0
@@ -58,15 +62,19 @@ class PPO_sym(PPO):
                 
                 # Mirror loss
                 # use mirror dict as mirror
+                num_obvs = int(obs_batch.shape[1] / self.history_len) # length of each observation : 39
                 if self.mirror_init:
-                    num_obvs = obs_batch.shape[1] # 75
+                    print("MIRROR TEST")
+                    if obs_batch.shape[1] % self.history_len:
+                        raise ValueError("Obs batch shape does not match history length.")
                     minibatchsize = obs_batch.shape[0]
-                    num_acts = actions_batch.shape[1] # 21
+                    num_acts = actions_batch.shape[1] 
                     cartesian_mirror_count = 0
                     no_mirror_count = 0
                     self.mirror_obs = torch.eye(num_obvs).reshape(1, num_obvs, num_obvs).repeat(minibatchsize, 1, 1).to(device=self.device)
                     self.mirror_act = torch.eye(num_acts).reshape(1, num_acts, num_acts).repeat(minibatchsize, 1, 1).to(device=self.device)
                     # Joint space mirrors
+
                     for _, (i,j) in self.mirror_dict.items():
                         self.mirror_act[:, i, i] = 0
                         self.mirror_act[:, j, j] = 0
@@ -77,8 +85,7 @@ class PPO_sym(PPO):
                         self.mirror_act[:, j, j] = 0
                         self.mirror_act[:, i, j] = -1
                         self.mirror_act[:, j, i] = -1
-                        
-                    # Cartesian space mirrors
+                        # Cartesian space mirrors
                     for (start, atend) in self.cartesian_angular_mirror:
                         # cartesian mirrors from range(start, atend)
                         if (atend-start)%3==0:
@@ -87,16 +94,14 @@ class PPO_sym(PPO):
                                 self.mirror_obs[:, start+2 + 3*i, start+2 + 3*i] *= -1
                                 cartesian_mirror_count += 3
                         else:
-                            print("SOMETHING WRONG IN CARTESIAN SPACE MIRRORS!!(angular)")
-                            quit()
+                            raise ValueError("SOMETHING WRONG IN CARTESIAN SPACE MIRRORS!!(angular)")
                     for (start, atend) in self.cartesian_linear_mirror:
                         if (atend-start)%3==0:
                             for i in range(int((atend-start)/3)):
                                 self.mirror_obs[:, start+1+ 3*i, start+1+ 3*i] *= -1
                                 cartesian_mirror_count += 3
                         else:
-                            print("SOMETHING WRONG IN CARTESIAN SPACE MIRRORS!!(linear)")                        
-                            quit()
+                            raise ValueError("SOMETHING WRONG IN CARTESIAN SPACE MIRRORS!!(linear)")                        
                             
                     for (start, atend) in self.cartesian_command_mirror:
                         if (atend-start)%3==0:
@@ -105,20 +110,26 @@ class PPO_sym(PPO):
                                 self.mirror_obs[:, start+2+ 3*i, start+2+ 3*i] *= -1
                                 cartesian_mirror_count += 3  
                         else:
-                            print("SOMETHING WRONG IN CARTESIAN SPACE MIRRORS!!(command)")                        
-                            quit()
+                            raise ValueError("SOMETHING WRONG IN CARTESIAN SPACE MIRRORS!!(command)")                        
                     for (start, atend) in self.no_mirror:
                         for _ in range(start, atend):
                             no_mirror_count += 1
-                    print("------ABOUT MIRROR------")
-                    print("Total number of elements of cartesian space mirroring : ", cartesian_mirror_count)
-                    print("Total number of elements of no mirroring : ", no_mirror_count)
-                    print("Total number of elements of joint space mirroring : ", num_obvs - cartesian_mirror_count - no_mirror_count)
                     # Joint space mirroring
                     for i in range(int((num_obvs - cartesian_mirror_count - no_mirror_count) / num_acts)):
                         self.mirror_obs[:, cartesian_mirror_count + i*num_acts:cartesian_mirror_count + (i+1)*num_acts, cartesian_mirror_count + i*num_acts:cartesian_mirror_count + (i+1)*num_acts] = self.mirror_act
+
+                    print("------ABOUT MIRROR------")
+                    print("Total number of elements of cartesian space mirroring : ", cartesian_mirror_count)
+                    print("Total number of elements of no mirroring : ", no_mirror_count)
+                    print("Total number of elements of joint space mirroring : ", num_obvs - cartesian_mirror_count - no_mirror_count)                    
                     self.mirror_init = False
-                mirror_loss = torch.mean(torch.square(self.actor_critic.actor(obs_batch) - (self.mirror_act @ self.actor_critic.actor((self.mirror_obs @ obs_batch.unsqueeze(2)).squeeze()).unsqueeze(2)).squeeze())) 
+                
+                
+                mirror_obs_batch = torch.zeros(obs_batch.shape, device=self.device)
+                for k in range(self.history_len):
+                    mirror_obs_batch[:, k * num_obvs: (k+1) * num_obvs] = (self.mirror_obs @ (obs_batch[:, k * num_obvs: (k+1) * num_obvs].unsqueeze(2))).squeeze()
+
+                mirror_loss = torch.mean(torch.square(self.actor_critic.actor(obs_batch) - (self.mirror_act @ self.actor_critic.actor(mirror_obs_batch).unsqueeze(2)).squeeze())) 
             
                 # Surrogate loss
                 ratio = torch.exp(actions_log_prob_batch - torch.squeeze(old_actions_log_prob_batch))
