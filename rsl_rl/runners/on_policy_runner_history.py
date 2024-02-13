@@ -56,33 +56,46 @@ class OnPolicyRunnerHistory(OnPolicyRunner):
                  device='cpu'):
         self.cfg=train_cfg["runner"]
         self.alg_cfg = train_cfg["algorithm"]
+        # Initialize algorithm runner
+        self.policy_cfg = train_cfg["policy"]
+        self.device = device
+        self.env = env        
+        # Initialize actor history length and history queue
         if "history_len" in self.cfg:
             history_len = self.cfg["history_len"]
         else:
             history_len = 1
-        self.policy_cfg = train_cfg["policy"]
-        self.device = device
-        self.env = env
-        if self.env.num_privileged_obs is not None:
-            num_critic_obs = self.env.num_privileged_obs 
-        else:
+        self.obs_history = deque(maxlen=history_len)
+
+        # Initialize critic history length and history queue         
+        if self.env.num_privileged_obs is not None:   
+            num_critic_obs = self.env.num_privileged_obs
+            if "critic_history_len" in self.cfg:
+                critic_history_len = self.cfg["critic_history_len"]
+            else:
+                critic_history_len = 1       
+        else: 
             num_critic_obs = self.env.num_obs
+            critic_history_len = history_len
+        self.critic_obs_history = deque(maxlen=critic_history_len)   
+            
+
         actor_critic_class = eval(self.cfg["policy_class_name"]) # ActorCritic
         actor_critic: ActorCritic = actor_critic_class( self.env.num_obs * history_len,
-                                                        num_critic_obs * history_len,
+                                                        num_critic_obs * critic_history_len,
                                                         self.env.num_actions,
                                                         **self.policy_cfg).to(self.device)
         alg_class = eval(self.cfg["algorithm_class_name"]) # PPO
         self.alg: PPO = alg_class(actor_critic, device=self.device, **self.alg_cfg) # self.alg_cfg is dict?
+        self.alg.history_len = history_len # Alg must know history len for logging
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
         self.save_interval = self.cfg["save_interval"]
 
         # init storage and model    
         storage_num_obs = self.env.num_obs * history_len
-        if self.env.num_privileged_obs is not None:
-            storage_privileged_obs = self.env.num_privileged_obs * history_len
-        else:
-            storage_privileged_obs = self.env.num_privileged_obs
+        storage_privileged_obs = self.env.num_privileged_obs
+        if storage_privileged_obs is not None:
+            storage_privileged_obs *= critic_history_len
         print("Observation history dimension : ", storage_num_obs)
         print("Privileged observation history dimension : ", storage_privileged_obs)
         self.alg.init_storage(self.env.num_envs, self.num_steps_per_env, [storage_num_obs], [storage_privileged_obs], [self.env.num_actions])
@@ -93,14 +106,10 @@ class OnPolicyRunnerHistory(OnPolicyRunner):
         self.tot_time = 0
         self.current_learning_iteration = 0
         _, _ = self.env.reset() # reset means a single step after zero initialization
-        
-        # State history
-        if hasattr(self.alg, "history_len"):
-            self.alg.history_len = history_len
-        self.obs_history = deque(maxlen=history_len)
-        self.critic_obs_history = deque(maxlen=history_len)            
-        for i in range(history_len):
+                     
+        for _ in range(self.obs_history.maxlen):
             self.obs_history.append(torch.zeros(size=(self.env.num_envs, self.env.num_obs), device=self.device))
+        for _ in range(self.critic_obs_history.maxlen):
             self.critic_obs_history.append(torch.zeros(size=(self.env.num_envs, num_critic_obs), device=self.device))
         print("History version of runner loaded")
     
@@ -110,22 +119,21 @@ class OnPolicyRunnerHistory(OnPolicyRunner):
             self.writer = SummaryWriter(log_dir=self.log_dir, flush_secs=10)
         if init_at_random_ep_len:
             self.env.episode_length_buf = torch.randint_like(self.env.episode_length_buf, high=int(self.env.max_episode_length))
-        # initialize dataframe for data collection
             
         SAVE_PATH = os.path.join(self.log_dir, 'data/')
         os.makedirs(SAVE_PATH, exist_ok=True)
         URDF_PATH = os.path.join(self.resource_root, 'robots', self.cfg['experiment_name'], 'urdf', self.cfg['experiment_name']+".urdf")
         CONFIG_PATH = os.path.join(self.envs_root, self.cfg['experiment_name'])
         CSV_PATH = os.path.join(SAVE_PATH, 'return.csv')
-        shutil.copy(URDF_PATH, SAVE_PATH)
-        shutil.copy(os.path.join(CONFIG_PATH, self.cfg['experiment_name']+".py"), SAVE_PATH)
-        shutil.copy(os.path.join(CONFIG_PATH, self.cfg['experiment_name']+"_config.py"), SAVE_PATH)
+        shutil.copy(URDF_PATH, os.path.join(SAVE_PATH, "log_" + self.cfg['experiment_name']+".urdf") )
+        shutil.copy(os.path.join(CONFIG_PATH, self.cfg['experiment_name']+".py"), os.path.join(SAVE_PATH, "log_"+self.cfg['experiment_name']+".py") )
+        shutil.copy(os.path.join(CONFIG_PATH, self.cfg['experiment_name']+"_config.py"), os.path.join(SAVE_PATH, "log_"+self.cfg['experiment_name']+"_config.py"))
             
         obs = self.env.get_observations().to(self.device)
         privileged_obs = self.env.get_privileged_observations()
         self.obs_history.append(obs)
         if privileged_obs is not None:
-            self.critic_obs_history.append(privileged_obs.to(self.device))
+            self.critic_obs_history.append(privileged_obs)
         else:
             self.critic_obs_history.append(obs)
         # history queues into tensors in self.device
