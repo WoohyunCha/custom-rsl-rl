@@ -9,13 +9,14 @@ from rsl_rl.algorithms import PPO
 # https://arxiv.org/pdf/1801.08093.pdf
 
 class PPO_sym(PPO):
-    def __init__(self, actor_critic, mirror, mirror_neg = {}, cartesian_angular_mirror=[], cartesian_linear_mirror=[], cartesian_command_mirror=[], no_mirror = [], mirror_weight = 4, num_learning_epochs=1, num_mini_batches=1, clip_param=0.2, gamma=0.998, lam=0.95, value_loss_coef=1, entropy_coef=0, learning_rate=0.001, max_grad_norm=1, use_clipped_value_loss=True, schedule="fixed", desired_kl=0.01, device='cpu'):
+    def __init__(self, actor_critic, mirror, mirror_neg = {}, cartesian_angular_mirror=[], cartesian_linear_mirror=[], cartesian_command_mirror=[], switch_mirror = [], no_mirror = [], mirror_weight = 4, num_learning_epochs=1, num_mini_batches=1, clip_param=0.2, gamma=0.998, lam=0.95, value_loss_coef=1, entropy_coef=0, learning_rate=0.001, max_grad_norm=1, use_clipped_value_loss=True, schedule="fixed", desired_kl=0.01, device='cpu'):
         super().__init__(actor_critic, num_learning_epochs, num_mini_batches, clip_param, gamma, lam, value_loss_coef, entropy_coef, learning_rate, max_grad_norm, use_clipped_value_loss, schedule, desired_kl, device)
         self.mirror_dict = mirror
         self.mirror_neg_dict = mirror_neg
         self.cartesian_angular_mirror = cartesian_angular_mirror
         self.cartesian_linear_mirror = cartesian_linear_mirror
         self.cartesian_command_mirror = cartesian_command_mirror
+        self.switch_mirror = switch_mirror
         self.no_mirror = no_mirror
         self.mirror_weight = mirror_weight
         self.mirror_init = True
@@ -71,6 +72,7 @@ class PPO_sym(PPO):
                     num_acts = actions_batch.shape[1] 
                     cartesian_mirror_count = 0
                     no_mirror_count = 0
+                    switch_mirror_count = 0
                     self.mirror_obs = torch.eye(num_obvs).reshape(1, num_obvs, num_obvs).repeat(minibatchsize, 1, 1).to(device=self.device)
                     self.mirror_act = torch.eye(num_acts).reshape(1, num_acts, num_acts).repeat(minibatchsize, 1, 1).to(device=self.device)
                     # Joint space mirrors
@@ -110,12 +112,25 @@ class PPO_sym(PPO):
                                 self.mirror_obs[:, start+2+ 3*i, start+2+ 3*i] *= -1
                                 cartesian_mirror_count += 3  
                         else:
-                            raise ValueError("SOMETHING WRONG IN CARTESIAN SPACE MIRRORS!!(command)")                        
+                            raise ValueError("SOMETHING WRONG IN CARTESIAN SPACE MIRRORS!!(command)")
+                    for (start, atend) in self.switch_mirror:
+                        if (atend-start)%2==0:
+                            for i in range(int((atend-start)/2)):
+                                self.mirror_obs[:, start+2*i, start+2*i] *= 0
+                                self.mirror_obs[:, start+2*i+1, start+2*i+1] *= 0
+                                self.mirror_obs[:, start+2*i+1, start+2*i] = 1
+                                self.mirror_obs[:, start+2*i, start+2*i+1] = 1
+                                
+                                switch_mirror_count += 2
+                        else:
+                            raise ValueError("SOMETHING WRONG IN SWITCH MIRRORS!!")                    
                     for (start, atend) in self.no_mirror:
                         for _ in range(start, atend):
                             no_mirror_count += 1
                     # Joint space mirroring
-                    for i in range(int((num_obvs - cartesian_mirror_count - no_mirror_count) / num_acts)):
+                    if ((num_obvs - cartesian_mirror_count - switch_mirror_count - no_mirror_count) % num_acts) != 0:
+                        raise ValueError("SOMETHING WRONG IN MIRROR TOTAL!!")
+                    for i in range(int((num_obvs - cartesian_mirror_count - switch_mirror_count - no_mirror_count) / num_acts)):
                         self.mirror_obs[:, cartesian_mirror_count + i*num_acts:cartesian_mirror_count + (i+1)*num_acts, cartesian_mirror_count + i*num_acts:cartesian_mirror_count + (i+1)*num_acts] = self.mirror_act
 
                     print("------ABOUT MIRROR------")

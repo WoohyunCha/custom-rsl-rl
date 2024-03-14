@@ -124,7 +124,8 @@ class OnPolicyRunnerHistory(OnPolicyRunner):
         os.makedirs(SAVE_PATH, exist_ok=True)
         URDF_PATH = os.path.join(self.resource_root, 'robots', self.cfg['experiment_name'], 'urdf', self.cfg['experiment_name']+".urdf")
         CONFIG_PATH = os.path.join(self.envs_root, self.cfg['experiment_name'])
-        CSV_PATH = os.path.join(SAVE_PATH, 'return.csv')
+        CSV_RETURN_PATH = os.path.join(SAVE_PATH, 'return.csv')
+        CSV_EPS_PATH = os.path.join(SAVE_PATH, 'episode_length.csv')
         shutil.copy(URDF_PATH, os.path.join(SAVE_PATH, "log_" + self.cfg['experiment_name']+".urdf") )
         shutil.copy(os.path.join(CONFIG_PATH, self.cfg['experiment_name']+".py"), os.path.join(SAVE_PATH, "log_"+self.cfg['experiment_name']+".py") )
         shutil.copy(os.path.join(CONFIG_PATH, self.cfg['experiment_name']+"_config.py"), os.path.join(SAVE_PATH, "log_"+self.cfg['experiment_name']+"_config.py"))
@@ -144,7 +145,11 @@ class OnPolicyRunnerHistory(OnPolicyRunner):
         ep_infos = []
         returns = deque(maxlen=num_learning_iterations)
         epochs = deque(maxlen=num_learning_iterations)
-        returnbuffer = deque(maxlen=self.num_steps_per_env)
+        episode_lengths = deque(maxlen=num_learning_iterations)
+        epochs2 = deque(maxlen=num_learning_iterations)
+        # returnbuffer = deque(maxlen=self.num_steps_per_env)
+        # episode_lengthbuffer = deque(maxlen=self.num_steps_per_env)
+        # Buffer stores the average values of terminated environments over the past 100 steps
         rewbuffer = deque(maxlen=100)
         lenbuffer = deque(maxlen=100)
         cur_reward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
@@ -171,24 +176,34 @@ class OnPolicyRunnerHistory(OnPolicyRunner):
                         cur_reward_sum += rewards
                         cur_episode_length += 1
                         new_ids = (dones > 0).nonzero(as_tuple=False)
-                        if len(new_ids):
-                            returnbuffer.append(cur_reward_sum[new_ids][:, 0].cpu().numpy().mean())
+                        # To buffer, add the mean of terminated environments. 
+                        # if len(new_ids):
+                        #     returnbuffer.append(cur_reward_sum[new_ids][:, 0].cpu().numpy().mean())
+                        #     episode_lengthbuffer.append(cur_episode_length[new_ids][:, 0].cpu().numpy().mean())
+                        
                         rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
                         lenbuffer.extend(cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
                         cur_reward_sum[new_ids] = 0
                         cur_episode_length[new_ids] = 0
-                if len(returnbuffer):
-                    # add returns data to csv file
-                    returns.append(round(sum(returnbuffer)/len(returnbuffer), 3))
+                        
+                if len(rewbuffer):
+                    # add returns data to csv file                    
+                    returns.append(round(sum(rewbuffer)/len(rewbuffer), 3))
                     epochs.append(it)
-                    returnbuffer.clear()
-                    
+                    # returnbuffer.clear()
+                if len(lenbuffer):
+                    # add returns data to csv file
+                    episode_lengths.append(round(sum(lenbuffer)/len(lenbuffer), 3))
+                    epochs2.append(it)
+                    # episode_lengthbuffer.clear()         
+                               
                 stop = time.time()
                 collection_time = stop - start
                 
                 # Learning step
                 start = stop
                 self.alg.compute_returns(critic_obs_history)
+                
             mean_value_loss, mean_surrogate_loss, mean_mirror_loss = self.alg.update()
             stop = time.time()
             learn_time = stop - start
@@ -200,8 +215,10 @@ class OnPolicyRunnerHistory(OnPolicyRunner):
         
         self.current_learning_iteration += num_learning_iterations
         self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(self.current_learning_iteration)))
-        append_to_csv(CSV_PATH, epoch=list(epochs), return_value=list(returns), isfirstappend=True)
-        plot_pandas(CSV_PATH, os.path.join(SAVE_PATH, 'return.png'))
+        append_to_csv(CSV_RETURN_PATH, epoch=list(epochs), value=list(returns), isfirstappend=True, name='returns')
+        append_to_csv(CSV_EPS_PATH, epoch=list(epochs2), value=list(episode_lengths), isfirstappend=True, name='episode length')
+        plot_pandas(CSV_RETURN_PATH, os.path.join(SAVE_PATH, 'return.png'))
+        plot_pandas(CSV_EPS_PATH, os.path.join(SAVE_PATH, 'episode_length.png'))
 
     def log(self, locs, width=80, pad=35):
         self.tot_timesteps += self.num_steps_per_env * self.env.num_envs
@@ -325,27 +342,26 @@ def deque_to_tensor(buffer : deque) -> torch.Tensor:
 def plot_pandas(csv_file, save_path):
     # Read the CSV file into a pandas DataFrame
     df = pd.read_csv(csv_file)
-    expected_columns = ['epoch', 'return']
-    if not all(col in df.columns for col in expected_columns):
-        raise ValueError("Error: Column names in CSV file do not match expected names.")
     # Extract 'episode' and 'return' columns
 
     # Extract 'epoch' and 'return' columns
+    name = df.columns[1]
     episode = df['epoch']
-    return_value = df['return']
+    return_value = df[name]
 
     # Plot episode-to-return graph
+    plt.figure()
     plt.plot(episode, return_value)
     plt.xlabel('Epoch')
-    plt.ylabel('Return')
-    plt.title('Epoch-to-Return Graph')
+    plt.ylabel(name)
+    plt.title('Epoch-to-' +name+ ' Graph')
     plt.grid(True)
     plt.show
     plt.savefig(save_path)
     
-def append_to_csv(file_path, epoch, return_value, isfirstappend = False):
+def append_to_csv(file_path, epoch, value, isfirstappend = False, name=''):
     # Create a DataFrame with the new data
-    data = {'epoch': epoch, 'return': return_value}
+    data = {'epoch': epoch, name : value}
     df = pd.DataFrame(data)
     
     # Append the DataFrame to the CSV file
