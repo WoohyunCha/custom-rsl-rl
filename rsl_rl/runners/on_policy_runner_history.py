@@ -334,7 +334,6 @@ def deque_to_tensor(buffer : deque) -> torch.Tensor:
         raise TypeError("Given deque does not contain torch tensors.")
     
     ret = torch.cat(list(buffer), dim=1)
-    
     if ret.shape[0] != buffer[0].shape[0] or ret.shape[1] != buffer[0].shape[1]*len(buffer):
         raise ValueError("Conversion from deque to tensor is wrong.")
     return ret
