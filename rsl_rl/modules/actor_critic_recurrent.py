@@ -33,7 +33,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.distributions import Normal
-from torch.nn.modules import rnn
+from torch.nn.modules import rnn, LSTM
 from .actor_critic import ActorCritic, get_activation
 from rsl_rl.utils import unpad_trajectories
 

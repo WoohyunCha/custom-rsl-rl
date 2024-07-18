@@ -185,6 +185,13 @@ class OnPolicyRunnerHistory(OnPolicyRunner):
                         lenbuffer.extend(cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
                         cur_reward_sum[new_ids] = 0
                         cur_episode_length[new_ids] = 0
+
+                    # Reset history buffer for terminated environments
+                    env_ids = dones.nonzero(as_tuple=False).flatten()
+                    for idx in range(self.obs_history.maxlen-1):
+                        self.obs_history[idx][env_ids, :] = 0.
+                    for idx in range(self.critic_obs_history.maxlen-1):
+                        self.critic_obs_history[idx][env_ids, :] = 0.
                         
                 if len(rewbuffer):
                     # add returns data to csv file                    
@@ -334,6 +341,9 @@ def deque_to_tensor(buffer : deque) -> torch.Tensor:
         raise TypeError("Given deque does not contain torch tensors.")
     
     ret = torch.cat(list(buffer), dim=1)
+    assert ret.shape[0] == buffer[0].shape[0], f'ret.shape[0] = {ret.shape[0]}, buffer[0].shape[0] = {buffer[0].shape[0]}'
+    assert ret.shape[1] == buffer[0].shape[1]*len(buffer), f'ret.shape[1] = {ret.shape[1]}, buffer[0].shape[1] = {buffer[0].shape[1]*len(buffer)}'
+    
     if ret.shape[0] != buffer[0].shape[0] or ret.shape[1] != buffer[0].shape[1]*len(buffer):
         raise ValueError("Conversion from deque to tensor is wrong.")
     return ret
